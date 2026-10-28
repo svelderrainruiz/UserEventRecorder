@@ -15,7 +15,6 @@
 		<Item Name="src" Type="Folder">
 			<Item Name="UserEventRecorder.lvlib" Type="Library" URL="../src/UserEventRecorder.lvlib"/>
 		</Item>
-		<Item Name="Core.lvlib" Type="Library" URL="../../modules/coordinator/src/Libraries/Core/Core.lvlib"/>
 		<Item Name="Launcher.lvlib" Type="Library" URL="../../modules/coordinator/src/Libraries/Launcher/Launcher.lvlib"/>
 		<Item Name="Replay.lvlib" Type="Library" URL="../../replay/Replay/src/Libraries/Replay/Replay.lvlib"/>
 		<Item Name="Dependencies" Type="Dependencies"/>
