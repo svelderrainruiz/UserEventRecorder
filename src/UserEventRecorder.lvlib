@@ -126,5 +126,4 @@
 	</Item>
 	<Item Name="TestEvent.ctl" Type="VI" URL="../TestEvent.ctl"/>
 	<Item Name="SaveUserEventsToDisk.vi" Type="VI" URL="../SaveUserEventsToDisk.vi"/>
-	<Item Name="Test UserEventRecorder API.vi" Type="VI" URL="../Test UserEventRecorder API.vi"/>
 </Library>
