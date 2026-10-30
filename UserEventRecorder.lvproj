@@ -12,11 +12,8 @@
 		<Property Name="server.vi.callsEnabled" Type="Bool">true</Property>
 		<Property Name="server.vi.propertiesEnabled" Type="Bool">true</Property>
 		<Property Name="specify.custom.address" Type="Bool">false</Property>
-		<Item Name="src" Type="Folder">
-			<Item Name="UserEventRecorder.lvlib" Type="Library" URL="../src/UserEventRecorder.lvlib"/>
-		</Item>
-		<Item Name="Launcher.lvlib" Type="Library" URL="../../modules/coordinator/src/Libraries/Launcher/Launcher.lvlib"/>
-		<Item Name="Replay.lvlib" Type="Library" URL="../../replay/Replay/src/Libraries/Replay/Replay.lvlib"/>
+		<Item Name="Test UserEventRecorder API.vi" Type="VI" URL="../src/Test UserEventRecorder API.vi"/>
+		<Item Name="UserEventRecorder.lvlib" Type="Library" URL="../src/UserEventRecorder.lvlib"/>
 		<Item Name="Dependencies" Type="Dependencies"/>
 		<Item Name="Build Specifications" Type="Build"/>
 	</Item>
