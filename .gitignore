@@ -1,3 +1,7 @@
-﻿*.lvprojstate
+﻿*.lvlibp
 *.aliases
 *.lvlps
+*.UserState
+.vipm/config.toml
+*.exe
+*.lvprojstate
