@@ -1,0 +1,223 @@
+name: Build UserEventRecorder Source Distribution
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - .github/workflows/build-uer-source-distribution.yml
+      - UserEventRecorder.lvproj
+      - src/**
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: uer-source-distribution-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  lint:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Install Go
+        uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
+        with:
+          go-version: '1.24.x'
+
+      - name: Validate Workflow with actionlint
+        run: |
+          go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.7
+          "$(go env GOPATH)/bin/actionlint" .github/workflows/build-uer-source-distribution.yml
+
+  source-preflight:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Validate UserEventRecorder Source Distribution Build Spec
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $repositoryRoot = $env:GITHUB_WORKSPACE
+          $projectPath = Join-Path $repositoryRoot 'UserEventRecorder.lvproj'
+          $libraryPath = Join-Path $repositoryRoot 'src/UserEventRecorder.lvlib'
+          foreach ($path in @($projectPath, $libraryPath)) {
+              if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+                  throw "Required source input is missing: $path"
+              }
+          }
+          $project = [System.Xml.XmlDocument]::new()
+          $project.Load($projectPath)
+          $libraryItem = $project.SelectSingleNode("//Item[@Name='UserEventRecorder.lvlib' and @Type='Library']")
+          if (-not $libraryItem -or $libraryItem.GetAttribute('URL') -cne '../src/UserEventRecorder.lvlib') {
+              throw 'UserEventRecorder.lvproj must link its adjacent src/UserEventRecorder.lvlib.'
+          }
+          $buildSpecs = @($project.SelectNodes("//Item[@Name='uer' and @Type='Source Distribution']"))
+          if ($buildSpecs.Count -ne 1) {
+              throw "Expected exactly one 'uer' Source Distribution build specification, found $($buildSpecs.Count)."
+          }
+          $buildSpec = $buildSpecs[0]
+          $specName = $buildSpec.SelectSingleNode("Property[@Name='Bld_buildSpecName']")
+          if (-not $specName -or $specName.InnerText -cne 'uer') {
+              throw "Build specification's Bld_buildSpecName must be 'uer'."
+          }
+          $firstSource = $buildSpec.SelectSingleNode("Property[@Name='Source[0].itemID']")
+          if (-not $firstSource -or $firstSource.InnerText -cne '/My Computer/UserEventRecorder.lvlib') {
+              throw "Build specification's Source[0] must reference /My Computer/UserEventRecorder.lvlib."
+          }
+          Write-Host "Validated UserEventRecorder.lvproj's 'uer' Source Distribution build specification."
+
+  build-uer:
+    needs: source-preflight
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: [self-hosted, windows, windows-labview2026-uer]
+    timeout-minutes: 60
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Verify Windows Build Environment
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $vipm = (& vipm version --json | ConvertFrom-Json)
+          if ($LASTEXITCODE -ne 0 -or $vipm.edition -cne 'Professional') {
+              throw 'VIPM Professional is required on the self-hosted Windows runner.'
+          }
+          $labview = (& vipm labview list --json | ConvertFrom-Json)
+          $installation = @($labview.labview_versions | Where-Object { $_.version_year -eq '2026' -and $_.bitness -eq 64 })
+          if ($LASTEXITCODE -ne 0 -or $installation.Count -ne 1) {
+              throw 'Exactly one LabVIEW 2026 64-bit installation must be available.'
+          }
+
+      - name: Install Third-Party VIPM Toolkits
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          # UserEventRecorder.lvlib calls into these DQMH/OpenG/JSONtext/Wovalab
+          # toolkits (confirmed by scanning src/*.vi|*.ctl for cross-library
+          # references, same method that found core's missing DQMH
+          # dependency). All ship on the standard public VIPM feed; versions
+          # pinned for determinism (matching the versions already pinned in
+          # svelderrainruiz/dependencies' own vipm.toml where the same
+          # packages appear).
+          $packages = @(
+              'delacor_lib_dqmh_toolkit@7.1.2.1547',
+              'oglib_comparison@6.0.0.4',
+              'oglib_boolean@6.0.0.9',
+              'wovalab_lib_utilities@1.5.0.196',
+              'jdp_science_jsontext@1.9.1.125'
+          )
+          foreach ($pkg in $packages) {
+              & vipm --labview-version 2026 --labview-bitness 64 install -y $pkg
+              if ($LASTEXITCODE -ne 0) { throw "Installing '$pkg' failed with exit code $LASTEXITCODE." }
+          }
+
+      - name: Install dependencies .vip Package
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          # Several UserEventRecorder.lvlib VIs call into
+          # dependencies.lvlibp:KeyboardAndMouseDataAcquisition.ctl /
+          # dependencies.lvlibp:TestEvent.ctl via a stale pre-repo-split
+          # qualifier, each with a 'src#<name>' fallback hint that matches an
+          # already-present local copy in this repo's own src/ -- same
+          # resolvable-by-local-copy pattern confirmed for core's
+          # Broadcast Events--cluster.ctl. Installing dependencies' own
+          # package is kept here regardless, since it is this repo's real,
+          # declared dependency (see vipm.toml) until a hosted feed lets
+          # vipm auto-resolve it; pinned to a specific, immutable release
+          # tag for determinism.
+          $vipUrl = 'https://github.com/svelderrainruiz/dependencies/releases/download/vip-v1.0.0/lbap_dependencies-1.0.0.45.vip'
+          $vipPath = Join-Path $env:RUNNER_TEMP 'lbap_dependencies-1.0.0.45.vip'
+          Invoke-WebRequest -Uri $vipUrl -OutFile $vipPath
+          & vipm --labview-version 2026 --labview-bitness 64 install -y $vipPath
+          if ($LASTEXITCODE -ne 0) { throw "Installing dependencies' .vip package failed with exit code $LASTEXITCODE." }
+
+      - name: Prepare Isolated Build Output
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          # The 'uer' Source Distribution spec's Bld_localDestDir/Destination
+          # paths are a fixed, non-repo-relative location (same convention as
+          # replay's/core's own build specs) -- clear it first so this job's
+          # output discovery below is unambiguous, since this runner is
+          # dedicated to this repo and nothing else writes here.
+          $outputRoot = 'C:\ProgramData\LabVIEW Benchmark Actor Plugins'
+          if (Test-Path -LiteralPath $outputRoot) {
+              Remove-Item -LiteralPath $outputRoot -Recurse -Force
+          }
+          "OUTPUT_ROOT=$outputRoot" >> $env:GITHUB_ENV
+
+      - name: Mass-Compile UserEventRecorder Project (NI CAR#705294 mitigation)
+        # Pre-build, non-fatal warming step for SandboxSBOMReporting#262's
+        # "Call By Reference in lv_build.lvlib:build_project.vi.ProxyCaller"
+        # (LabVIEWCLI error 1130, NI CAR#705294) -- same mitigation already
+        # proven for svelderrainruiz/dependencies and svelderrainruiz/core.
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $projectRoot = Join-Path $env:GITHUB_WORKSPACE 'src'
+          if (-not (Test-Path -LiteralPath $projectRoot -PathType Container)) {
+              throw "UserEventRecorder source directory was not checked out: $projectRoot"
+          }
+          $labviewDir = Get-ChildItem 'C:\Program Files\National Instruments' -Directory -Filter 'LabVIEW *' -ErrorAction SilentlyContinue |
+              Sort-Object Name -Descending | Select-Object -First 1
+          if (-not $labviewDir) {
+              throw 'No LabVIEW installation found under C:\Program Files\National Instruments.'
+          }
+          $labviewExe = Join-Path $labviewDir.FullName 'LabVIEW.exe'
+          if (-not (Test-Path -LiteralPath $labviewExe -PathType Leaf)) {
+              throw "LabVIEW.exe not found at expected path: $labviewExe"
+          }
+          $cliCommand = Get-Command LabVIEWCLI.exe -ErrorAction SilentlyContinue
+          $cliExe = if ($cliCommand) { $cliCommand.Source } else { Join-Path $labviewDir.FullName 'LabVIEWCLI.exe' }
+          if (-not (Test-Path -LiteralPath $cliExe -PathType Leaf)) {
+              throw "LabVIEWCLI.exe not found (checked PATH and '$cliExe')."
+          }
+          $logPath = Join-Path $env:RUNNER_TEMP 'masscompile.log'
+          Write-Output "Mass-compiling $projectRoot with $labviewExe ..."
+
+          $prevEAP = $ErrorActionPreference
+          $ErrorActionPreference = 'Continue'
+          & $cliExe -LogToConsole TRUE -OperationName MassCompile -DirectoryToCompile $projectRoot -LabVIEWPath $labviewExe -Headless 2>&1 |
+              Tee-Object -FilePath $logPath
+          $massCompileExitCode = $LASTEXITCODE
+          $ErrorActionPreference = $prevEAP
+          Write-Output "Mass compile finished (exit code $massCompileExitCode, non-fatal); log: $logPath"
+          exit 0
+
+      - name: Build uer Source Distribution
+        id: build_uer
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $lvprojPath = Join-Path $env:GITHUB_WORKSPACE 'UserEventRecorder.lvproj'
+          if (-not (Test-Path -LiteralPath $lvprojPath -PathType Leaf)) {
+              throw "UserEventRecorder.lvproj is missing: $lvprojPath"
+          }
+
+          & vipm --labview-version 2026 --labview-bitness 64 build $lvprojPath --lvproj-build-spec uer --lvproj-target "My Computer" --build-number ${{ github.run_number }}
+          if ($LASTEXITCODE -ne 0) { throw "vipm build failed with exit code $LASTEXITCODE." }
+
+          $builtDirs = @(Get-ChildItem -LiteralPath $env:OUTPUT_ROOT -Directory -ErrorAction SilentlyContinue)
+          if ($builtDirs.Count -ne 1) {
+              throw "Expected exactly one output directory under $env:OUTPUT_ROOT, found $($builtDirs.Count)."
+          }
+          "BUILD_OUTPUT_DIR=$($builtDirs[0].FullName)" >> $env:GITHUB_ENV
+          Write-Host "Built Source Distribution at $($builtDirs[0].FullName)"
+
+      - name: Upload uer Source Distribution
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: uer-source-distribution-${{ github.run_id }}
+          path: ${{ env.BUILD_OUTPUT_DIR }}
+          if-no-files-found: error
+          retention-days: 90
